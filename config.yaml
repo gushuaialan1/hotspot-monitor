@@ -1,0 +1,23 @@
+accounts:
+  history:
+    name: "古今结合·历史"
+    description: "找能与古代历史、传统文化、名人典故结合的热点"
+  emotion:
+    name: "情感共鸣"
+    description: "找能触发情感共鸣、人生感悟、亲情爱情友情类的热点"
+  wisdom:
+    name: "个人智慧"
+    description: "找能引发成长思考、职场智慧、认知提升的热点"
+
+sources:
+  weibo: true
+  zhihu: true
+  baidu: true
+  toutiao: true
+  tencent: true
+  netease: true
+
+llm:
+  model: "kimi-for-coding"
+  max_tokens: 4096
+  temperature: 0.3
