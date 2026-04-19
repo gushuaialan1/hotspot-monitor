@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, List
 
 import requests
@@ -11,19 +12,22 @@ logger = logging.getLogger(__name__)
 
 KIMI_API_URL = "https://api.kimi.com/coding/v1/chat/completions"
 
-SYSTEM_PROMPT = """你是一个热点内容筛选助手。你的任务是从给定热点列表中，为三个短视频账号方向各筛选最匹配的5条热点。
+SYSTEM_PROMPT = """你是一个热点内容筛选助手。从给定热点列表中，为三个短视频账号方向各筛选最匹配的5条热点。
 
 三个账号方向：
 1. history（古今结合·历史）：找能与古代历史、传统文化、名人典故结合的热点
 2. emotion（情感共鸣）：找能触发情感共鸣、人生感悟、亲情爱情友情类的热点
 3. wisdom（个人智慧）：找能引发成长思考、职场智慧、认知提升的热点
 
-输出要求：
+重要：不要进行逐步分析，不要写思考过程，直接输出JSON。
+
+输出格式：
 - 严格返回JSON格式，顶层有history、emotion、wisdom三个键
 - 每个键对应的值为一个数组，最多5个元素
-- 每个元素包含：title（标题）、url（链接）、reason（筛选理由，50字以内）、score（匹配分数，1-10整数）
-- 如果某方向匹配不足5条，允许返回少于5条，但不允许虚构不存在的热点
+- 每个元素包含：title（标题）、url（链接）、reason（筛选理由，30字以内）、score（匹配分数，1-10整数）
+- 如果某方向匹配不足5条，允许返回少于5条，不允许虚构不存在的热点
 - 只能从输入列表中选择热点
+- 不要输出任何额外的文字、标记或格式化内容
 
 输入格式为JSON数组，每个元素包含title、url、source、excerpt字段。"""
 
@@ -49,6 +53,9 @@ def select_hotspots(items: List[HotspotItem], config: Config) -> List[SelectedIt
         logger.warning("No items to select from")
         return []
 
+    # Limit items to reduce token usage and avoid truncation
+    items = items[:15]
+
     api_key = config.kimi_api_key
     llm_cfg = config.llm
     messages = _build_messages(items)
@@ -56,9 +63,8 @@ def select_hotspots(items: List[HotspotItem], config: Config) -> List[SelectedIt
     payload = {
         "model": llm_cfg.get("model", "kimi-for-coding"),
         "messages": messages,
-        "max_tokens": llm_cfg.get("max_tokens", 4096),
+        "max_tokens": llm_cfg.get("max_tokens", 8192),
         "temperature": llm_cfg.get("temperature", 0.3),
-        "response_format": {"type": "json_object"},
     }
 
     headers = {
@@ -78,7 +84,17 @@ def select_hotspots(items: List[HotspotItem], config: Config) -> List[SelectedIt
     result = resp.json()
 
     content = result["choices"][0]["message"]["content"]
-    parsed = json.loads(content)
+    finish_reason = result["choices"][0].get("finish_reason", "unknown")
+    logger.info("Kimi response finish_reason=%s, content_length=%d", finish_reason, len(content))
+
+    if not content or not content.strip():
+        logger.error("Kimi returned empty content. Full response: %s", json.dumps(result, ensure_ascii=False)[:1000])
+        raise ValueError("Kimi returned empty content")
+
+    # Robust JSON parsing with cleanup attempts
+    parsed = _safe_parse_json(content)
+    if parsed is None:
+        raise ValueError("Failed to parse LLM response as JSON")
 
     selected = []
     for account_type in ("history", "emotion", "wisdom"):
@@ -103,3 +119,41 @@ def select_hotspots(items: List[HotspotItem], config: Config) -> List[SelectedIt
 
     logger.info("Selected %d items across 3 accounts", len(selected))
     return selected
+
+
+def _safe_parse_json(content: str):
+    """Try to parse JSON, with cleanup for common LLM output issues."""
+    content = content.strip()
+
+    # Remove markdown code block wrappers
+    if content.startswith("```json"):
+        content = content[7:]
+    if content.startswith("```"):
+        content = content[3:]
+    if content.endswith("```"):
+        content = content[:-3]
+    content = content.strip()
+
+    # Try direct parse
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting JSON object from text
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Try appending missing closing braces/brackets
+    for suffix in ["", "}", "]", "}]", "}}", "]}"]:
+        try:
+            return json.loads(content + suffix)
+        except json.JSONDecodeError:
+            continue
+
+    logger.error("JSON parse failed. Content preview: %s", content[:500])
+    return None

@@ -18,6 +18,6 @@ sources:
   netease: true
 
 llm:
-  model: "kimi-for-coding"
-  max_tokens: 4096
+  model: "kimi-k2"
+  max_tokens: 16384
   temperature: 0.3
