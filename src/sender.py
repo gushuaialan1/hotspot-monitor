@@ -1,5 +1,4 @@
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -12,17 +11,23 @@ def send_report(html_path: str, recipient: Optional[str] = None) -> None:
         logger.error("Report file not found: %s", html_path)
         return
 
-    logger.info("Sending report: %s", html_path)
+    logger.info("Report generated at: %s", html_path)
+
+    # Try to use Hermes send_message if running inside Hermes environment
     try:
-        result = subprocess.run(
-            ["send_message", "--file", str(path), "--type", "html"],
-            capture_output=True,
-            text=True,
-            check=False,
+        from hermes_tools import send_message as hermes_send
+
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        target = recipient or "weixin"
+        hermes_send(message=content, target=target)
+        logger.info("Report sent to %s via Hermes", target)
+    except ImportError:
+        logger.info(
+            "hermes_tools not available (normal outside Hermes). "
+            "Report saved to %s for manual delivery.",
+            html_path,
         )
-        if result.returncode != 0:
-            logger.error("send_message failed: %s", result.stderr)
-        else:
-            logger.info("send_message succeeded: %s", result.stdout)
-    except FileNotFoundError:
-        logger.warning("send_message command not found, skipping delivery")
+    except Exception as e:
+        logger.error("Failed to send report: %s", e)
